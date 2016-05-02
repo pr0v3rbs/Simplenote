@@ -42,11 +42,19 @@ void SimplenoteManager::Finalize()
 
 void SimplenoteManager::ModifyOn(__time64_t modifyTime)
 {
-    CString content;
-    editBox_->GetWindowTextW(content);
-    CURRENT_NOTE(listBox_)->content = content;
-    CURRENT_NOTE(listBox_)->isModifying = true;
-    lastModifyTime_ = modifyTime;
+    if (listBox_->GetCurSel() == LB_ERR)
+    {
+        MessageBox(NULL, _T("Create New Note"), _T("Error"), MB_OK);
+        editBox_->SetWindowTextW(_T(""));
+    }
+    else
+    {
+        CString content;
+        editBox_->GetWindowTextW(content);
+        CURRENT_NOTE(listBox_)->content = content;
+        CURRENT_NOTE(listBox_)->isModifying = true;
+        lastModifyTime_ = modifyTime;
+    }
 }
 
 void SimplenoteManager::SelectChanged()
@@ -61,11 +69,13 @@ void SimplenoteManager::SelectChanged()
 void SimplenoteManager::MakeNewNote()
 {
     struct Note* newNote;
+    mutex_.lock();
     noteManager_.CreateNote(&newNote);
     listBox_->InsertString(0, newNote->content);
     listBox_->SetItemDataPtr(0, newNote);
     listBox_->SetCurSel(0);
     editBox_->SetWindowTextW(_T(""));
+    mutex_.unlock();
 }
 
 UINT SimplenoteManager::CommunicatorThread_(LPVOID param)
@@ -91,26 +101,25 @@ UINT SimplenoteManager::CommunicateLoop_()
             // download notelist
             noteManager_.DownloadNoteList();
 
-            if (noteManager_.ParseNoteList(notePtrList))
+            noteManager_.ParseNoteList(notePtrList);
+
+            noteManager_.UpdateNote();
+
+            CheckChangedNote_(notePtrList);
+
+            // change note subject
+            for (int idx = 0; idx < listBox_->GetCount(); ++idx)
             {
-                noteManager_.UpdateNote();
-
-                CheckChangedNote_(notePtrList);
-
-                // change note subject
-                for (int idx = 0; idx < listBox_->GetCount(); ++idx)
+                if (IDX_NOTE(listBox_, idx)->status == 2)
                 {
-                    if (IDX_NOTE(listBox_, idx)->status == 2)
+                    listBox_->SetDlgItemTextW(idx, IDX_NOTE(listBox_, idx)->content);
+
+                    if (idx == listBox_->GetCurSel())
                     {
-                        listBox_->SetDlgItemTextW(idx, IDX_NOTE(listBox_, idx)->content);
-
-                        if (idx == listBox_->GetCurSel())
-                        {
-                            editBox_->SetWindowTextW(IDX_NOTE(listBox_, idx)->content);
-                        }
-
-                        IDX_NOTE(listBox_, idx)->status = 0;
+                        editBox_->SetWindowTextW(IDX_NOTE(listBox_, idx)->content);
                     }
+
+                    IDX_NOTE(listBox_, idx)->status = 0;
                 }
             }
         }

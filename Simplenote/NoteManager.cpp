@@ -8,7 +8,6 @@
 
 void NoteManager::Initialize()
 {
-    newNoteIdx_ = 0;
     isLogin_ = false;
 }
 
@@ -39,32 +38,34 @@ bool NoteManager::Login(CString& userID, CString& userPW)
 
 void NoteManager::CreateNote(struct Note** newNotePtr)
 {
-    /*struct Note newNote;
-    newNote.content = _T("");
-    newNote.createTime = 0;
-    newNote.deleted = 0;
-    newNote.isLocal = true;
-    newNote.key = _T("");
-    newNote.modifyTime = 0;
-    newNote.title = _T("");
-    newNote.updated = false;
+    struct Note* newNote = new Note;
+    newNote->content = _T("");
+    newNote->createTime = 0;
+    newNote->deleted = 0;
+    if (isLogin_)
+        newNote->isLocal = false;
+    else
+        newNote->isLocal = true;
+    // TODO : select test Number;
+    newNote->key = _T("test");
+    newNote->modifyTime = DBL_MAX;
+    newNote->title = _T("new note");
+    newNote->isModifying = false;
 
-    noteList_.push_back(newNote);
+    noteMap_[newNote->key] = newNote;
 
-    *newNotePtr = &noteList_[noteList_.size() - 1];
-
-    ++newNoteIdx_;*/
+    *newNotePtr = noteMap_[newNote->key];
 }
 
 void NoteManager::UploadNote()
 {
     for (auto iter = noteMap_.begin(); iter != noteMap_.end(); ++iter)
     {
-        if (iter->second.isModifying)
+        if (iter->second->isModifying)
         {
             if (UploadNote_(iter->second) == S_OK)
             {
-                iter->second.isModifying = false;
+                iter->second->isModifying = false;
             }
             SaveNote_(iter->second);
         }
@@ -78,28 +79,26 @@ void NoteManager::DownloadNoteList()
         CString url = _T("https://app.simplenote.com/api2/index?auth=") + token_ + _T("&email=") + email_;
 
         CreateDirectory(_T(".\\notes\\") + email_, NULL);
-
         URLDownloadToFile(NULL, url, _T(".\\notes\\") + email_ + _T("\\notes_list"), 0, NULL);
     }
 }
 
 bool NoteManager::ParseNoteList(_In_ std::vector<Note*>& notePtrList)
 {
-    bool result = false;
-    std::ifstream noteListFile(_T(".\\notes\\") + email_ + _T("\\notes_list"));
+    bool result = true;
+    std::ifstream fileStream(_T(".\\notes\\") + email_ + _T("\\notes_list"));
     std::string noteListInfo;
 
-    if (noteListFile.is_open())
+    if (isLogin_ && fileStream.is_open())
     {
         Json::Reader reader;
         Json::Value root;
         Json::Value notes;
         std::string temString;
         CString noteKey;
-        Note note;
 
-        getline(noteListFile, noteListInfo);
-        noteListFile.close();
+        getline(fileStream, noteListInfo);
+        fileStream.close();
 
         if (reader.parse(noteListInfo, root))
         {
@@ -111,42 +110,101 @@ bool NoteManager::ParseNoteList(_In_ std::vector<Note*>& notePtrList)
                     noteKey = (*iter)["key"].asCString();
                     if (noteMap_.find(noteKey) == noteMap_.end())
                     {
+                        struct Note* note = new Note;
                         temString = (*iter)["modifydate"].asString();
-                        note.modifyTime = atof(temString.c_str());
-                        note.deleted = (*iter)["deleted"].asInt();
+                        note->modifyTime = atof(temString.c_str());
+                        note->deleted = (*iter)["deleted"].asInt();
                         temString = (*iter)["createdate"].asString();
-                        note.createTime = atof(temString.c_str());
-                        note.isModifying = false;
-                        note.isLocal = false;
-                        note.key = noteKey;
+                        note->createTime = atof(temString.c_str());
+                        note->isModifying = false;
+                        note->isLocal = false;
+                        note->key = noteKey;
                         noteMap_[noteKey] = note;
-                        if (noteMap_[noteKey].deleted == 0)
+                        noteMap_[noteKey]->status = 1;
+                        if (noteMap_[noteKey]->deleted == 0)
                         {
-                            noteMap_[noteKey].status = 1;   // editable new note; need to get content;
-                            notePtrList.push_back(&noteMap_[noteKey]);
+                            notePtrList.push_back(noteMap_[noteKey]);
                         }
                     }
                     else
                     {
-                        int prevDeleted = noteMap_[noteKey].deleted;
+                        int prevDeleted = noteMap_[noteKey]->deleted;
 
                         temString = (*iter)["modifydate"].asString();
-                        noteMap_[noteKey].modifyTime = atof(temString.c_str());
-                        noteMap_[noteKey].deleted = (*iter)["deleted"].asInt();
+                        noteMap_[noteKey]->modifyTime = atof(temString.c_str());
+                        noteMap_[noteKey]->deleted = (*iter)["deleted"].asInt();
                         temString = (*iter)["createdate"].asString();
-                        noteMap_[noteKey].createTime = atof(temString.c_str());
+                        noteMap_[noteKey]->createTime = atof(temString.c_str());
 
-                        if (prevDeleted == 1 && noteMap_[noteKey].deleted == 0)
+                        // check restore note
+                        if (prevDeleted == 1 && noteMap_[noteKey]->deleted == 0)
                         {
-                            notePtrList.push_back(&noteMap_[noteKey]);
+                            notePtrList.push_back(noteMap_[noteKey]);
                         }
                     }
                 }
             }
 
-            result = true;
             //DeleteFile(_T(".\\notes\\") + email_ + _T("\\notes_list"));
         }
+    }
+
+    // load local new note file;
+    std::string str;
+    WIN32_FIND_DATA fd;
+    HANDLE hFind;
+    if (isLogin_)
+    {
+        hFind = ::FindFirstFile(_T(".\\notes\\") + email_ + _T("\\local_notes_list\\*.*"), &fd);
+        if (hFind != INVALID_HANDLE_VALUE)
+        {
+            do
+            {
+                // read all (real) files in current folder
+                // , delete '!' read other 2 default folder . and ..
+                if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) &&
+                    noteMap_.find(fd.cFileName) == noteMap_.end())
+                {
+                    struct Note* note = new Note;
+                    note->key = fd.cFileName;
+                    fileStream.open(_T(".\\notes\\") + email_ + _T("\\") + note->key + _T("\\modifydate"));
+                    getline(fileStream, str);
+                    fileStream.close();
+                    note->modifyTime = atof(str.c_str());
+                    note->isModifying = true;
+                    noteMap_[note->key] = note;
+                    noteMap_[note->key]->status = 1;
+                    notePtrList.push_back(noteMap_[note->key]);
+                }
+            } while (::FindNextFile(hFind, &fd));
+            ::FindClose(hFind);
+        }
+    }
+
+    hFind = ::FindFirstFile(_T(".\\notes\\local_notes_list\\*.*"), &fd);
+    if (hFind != INVALID_HANDLE_VALUE)
+    {
+        do
+        {
+            // read all (real) files in current folder
+            // , delete '!' read other 2 default folder . and ..
+            if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) &&
+                noteMap_.find(fd.cFileName) == noteMap_.end())
+            {
+                struct Note* note = new Note;
+                note->key = fd.cFileName;
+                fileStream.open(_T(".\\notes\\") + note->key + _T("\\modifydate"));
+                getline(fileStream, str);
+                fileStream.close();
+                note->modifyTime = atof(str.c_str());
+                note->isLocal = true;
+                note->isModifying = true;
+                noteMap_[note->key] = note;
+                noteMap_[note->key]->status = 1;
+                notePtrList.push_back(noteMap_[note->key]);
+            }
+        } while (::FindNextFile(hFind, &fd));
+        ::FindClose(hFind);
     }
 
     return result;
@@ -156,115 +214,167 @@ void NoteManager::UpdateNote()
 {
     for (auto iter = noteMap_.begin(); iter != noteMap_.end(); ++iter)
     {
-        if (NeedToUpdate_(iter->second))
+        // if not new created note and need to update
+        if (iter->second->key != _T("test") && NeedToUpdate_(iter->second))
         {
-            if (DownloadNote_(iter->second.key) == S_OK)
+            if (DownloadNote_(iter->second->key) == S_OK)
             {
                 if (UpdateNote_(iter->second))
                 {
                     GetNoteFromFile_(iter->second);
-                    iter->second.status = 2;
+                    iter->second->status = 2;
                 }
             }
         }
         // empty content note
-        else if (iter->second.status == 1)
+        else if (iter->second->status == 1)
         {
             GetNoteFromFile_(iter->second);
-            iter->second.status = 0;
+            iter->second->status = 0;
         }
     }
 }
 
-HRESULT NoteManager::UploadNote_(Note& note)
+HRESULT NoteManager::UploadNote_(Note* note)
 {
     HRESULT result = E_FAIL;
     CString url;
 
-    // upload previous note
     if (isLogin_)
     {
-        if (note.key.GetLength() > 0)
-        {
-            url = _T("https://app.simplenote.com/api2/data/") + note.key + _T("?auth=") + token_ + _T("&email=") + email_;
-            Json::StyledWriter writer;
-            CStringA postData;
-            CStringA pythonStyleString;
-            CString response;
-            Json::Value root;
-            std::vector<int> unicodeChecker;
-
-            ConvertPythonData_(note.content, pythonStyleString, unicodeChecker);
-            root["content"] = pythonStyleString.GetString();
-
-            // send post data
-            pythonStyleString = writer.write(root).c_str();
-            UrlEncode_(pythonStyleString, postData, unicodeChecker);
-            if (HttpSend(url, postData, response) == 0)
-            {
-                Json::Reader reader;
-                CT2CA pszConvertedAnsiString(response);
-                std::string temString(pszConvertedAnsiString);
-                if (reader.parse(temString, root))
-                {
-                    note.modifyTime = atof(root["modifydate"].asString().c_str());
-                    result = S_OK;
-                }
-            }
-
-            note.isLocal = result != S_OK;
-        }
         // upload new note
-        else
+        //if (note.key.StartsWith("newnote"))
+        if (note->key == _T("test"))
         {
             url = _T("https://app.simplenote.com/api2/data?auth=") + token_ + _T("&email=") + email_;
-            // if upload success then parse,
-            // else save local and insert noteList;
         }
+        // upload previous note
+        else
+        {
+            url = _T("https://app.simplenote.com/api2/data/") + note->key + _T("?auth=") + token_ + _T("&email=") + email_;
+        }
+
+        Json::StyledWriter writer;
+        CStringA postData;
+        CStringA pythonStyleString;
+        CString response;
+        Json::Value root;
+        std::vector<int> unicodeChecker;
+
+        ConvertPythonData_(note->content, pythonStyleString, unicodeChecker);
+        root["content"] = pythonStyleString.GetString();
+
+        // send post data
+        pythonStyleString = writer.write(root).c_str();
+        UrlEncode_(pythonStyleString, postData, unicodeChecker);
+        if (HttpSend(url, postData, response) == 0)
+        {
+            Json::Reader reader;
+            CT2CA pszConvertedAnsiString(response);
+            std::string temString(pszConvertedAnsiString);
+            if (reader.parse(temString, root))
+            {
+                note->modifyTime = atof(root["modifydate"].asString().c_str());
+                // new note.
+                if (note->key == "test")
+                {
+                    CString newKey(root["key"].asString().c_str());
+                    noteMap_[newKey] = noteMap_[note->key];
+                    noteMap_.erase(note->key);
+                    DeleteFile(_T(".\\notes\\") + email_ + _T("\\local_notes_list\\") + note->key);
+                    DeleteFile(_T(".\\notes\\") + email_ + _T("\\") + note->key + _T("\\content"));
+                    DeleteFile(_T(".\\notes\\") + email_ + _T("\\") + note->key + _T("\\modifydate"));
+                    RemoveDirectory(_T(".\\notes\\") + email_ + _T("\\") + note->key);
+                    note->key = root["key"].asString().c_str();
+                }
+                result = S_OK;
+            }
+        }
+    }
+
+    if (note->key != "test")
+    {
+        note->isLocal = result != S_OK;
     }
 
     return result;
 }
 
-void NoteManager::SaveNote_(Note& note)
+void NoteManager::SaveNote_(Note* note)
 {
     // TODO : save local note when not logined.
     std::string utf8String;
+    CString noteDirectory = _T(".\\notes\\");
+    std::ofstream noteFile;
 
-    ConvertCStringToString_(note.content, utf8String);
-    std::ofstream noteFile(_T(".\\notes\\") + email_ + _T("\\") + note.key + _T("\\content"));
+    if (isLogin_)
+    {
+        noteDirectory += email_ + _T("\\");
+    }
+
+    // add note_key in local_notes_list
+    if (note->key == _T("test"))
+    {
+        CreateDirectory(noteDirectory + _T("\\local_notes_list"), NULL);
+        noteFile.open(noteDirectory + _T("local_notes_list\\") + note->key);
+        noteFile.close();
+    }
+
+    noteDirectory += note->key;
+
+    CreateDirectory(noteDirectory, NULL);
+
+    ConvertCStringToString_(note->content, utf8String);
+    noteFile.open(noteDirectory + _T("\\content"));
     noteFile << utf8String;
     noteFile.close();
 
-    if (note.isLocal)
+    noteFile.open(noteDirectory + _T("\\modifydate"));
+    noteFile << std::to_string(note->modifyTime);
+    noteFile.close();
+
+    if (note->isLocal)
     {
-        noteFile.open(_T(".\\notes\\") + email_ + _T("\\") + note.key + _T("\\local"));
-        noteFile.close();
+        // if new note
+        if (note->key == _T("test"))
+        {
+            // delete previous local new note
+            if (isLogin_)
+            {
+                DeleteFile(_T(".\\notes\\local_notes_list\\") + note->key);
+                DeleteFile(_T(".\\notes\\") + note->key + _T("\\content"));
+                DeleteFile(_T(".\\notes\\") + note->key + _T("\\modifydate"));
+                RemoveDirectory(_T(".\\notes\\") + note->key);
+                note->isLocal = false;
+            }
+        }
+        else
+        {
+            noteFile.open(noteDirectory + _T("\\local"));
+            noteFile.close();
+        }
     }
     else
     {
-        noteFile.open(_T(".\\notes\\") + email_ + _T("\\") + note.key + _T("\\modifydate"));
-        noteFile << std::to_string(note.modifyTime);
-        noteFile.close();
-        DeleteFile(_T(".\\notes\\") + email_ + _T("\\") + note.key + _T("\\local"));
+        DeleteFile(noteDirectory + _T("\\local"));
     }
 }
 
-bool NoteManager::NeedToUpdate_(Note& note)
+bool NoteManager::NeedToUpdate_(Note* note)
 {
     bool result = false;
-    std::ifstream localFile(_T(".\\notes\\") + email_ + _T("\\") + note.key + _T("\\local"));
+    std::ifstream localFile(_T(".\\notes\\") + email_ + _T("\\") + note->key + _T("\\local"));
 
     // local file, must not update, but need to upload
     if (localFile.is_open())
     {
-        note.isLocal = true;
-        note.isModifying = true;
+        note->isLocal = true;
+        note->isModifying = true;
         localFile.close();
     }
     else
     {
-        std::ifstream modifydateFile(_T(".\\notes\\") + email_ + _T("\\") + note.key + _T("\\modifydate"));
+        std::ifstream modifydateFile(_T(".\\notes\\") + email_ + _T("\\") + note->key + _T("\\modifydate"));
         std::string localModifyTimeString;
         double localModifyTime;
 
@@ -274,7 +384,7 @@ bool NoteManager::NeedToUpdate_(Note& note)
             modifydateFile.close();
             localModifyTime = atof(localModifyTimeString.c_str());
 
-            if (localModifyTime < note.modifyTime)
+            if (localModifyTime < note->modifyTime)
             {
                 result = true;
             }
@@ -311,10 +421,10 @@ HRESULT NoteManager::DownloadNote_(CString& key, CString version)
     return result;
 }
 
-bool NoteManager::UpdateNote_(Note& note)
+bool NoteManager::UpdateNote_(Note* note)
 {
     bool result = false;
-    std::ifstream noteInfoFile(_T(".\\notes\\") + email_ + _T("\\") + note.key + _T("_info"));
+    std::ifstream noteInfoFile(_T(".\\notes\\") + email_ + _T("\\") + note->key + _T("_info"));
     std::string noteInfo;
 
     if (noteInfoFile.is_open())
@@ -326,41 +436,42 @@ bool NoteManager::UpdateNote_(Note& note)
 
         if (reader.parse(noteInfo, noteJson))
         {
-            CreateDirectory(_T(".\\notes\\") + email_ + _T("\\") + note.key, NULL);
-            std::ofstream noteFile(_T(".\\notes\\") + email_ + _T("\\") + note.key + _T("\\modifydate"));
+            CreateDirectory(_T(".\\notes\\") + email_ + _T("\\") + note->key, NULL);
+            std::ofstream noteFile(_T(".\\notes\\") + email_ + _T("\\") + note->key + _T("\\modifydate"));
             noteFile << noteJson["modifydate"].asString();
             noteFile.close();
 
-            noteFile.open(_T(".\\notes\\") + email_ + _T("\\") + note.key + _T("\\content"));
+            noteFile.open(_T(".\\notes\\") + email_ + _T("\\") + note->key + _T("\\content"));
             noteFile << noteJson["content"].asString();
             noteFile.close();
 
             result = true;
             noteInfoFile.close();
-            DeleteFile(_T(".\\notes\\") + email_ + _T("\\") + note.key + _T("_info"));
+            DeleteFile(_T(".\\notes\\") + email_ + _T("\\") + note->key + _T("_info"));
         }
     }
 
     return result;
 }
 
-void NoteManager::GetNoteFromFile_(Note& note)
+void NoteManager::GetNoteFromFile_(Note* note)
 {
-    std::wifstream noteInfoFile(_T(".\\notes\\") + email_ + _T("\\") + note.key + _T("\\content"));
+    // TODO : check local new file and new file
+    std::wifstream noteInfoFile(_T(".\\notes\\") + email_ + _T("\\") + note->key + _T("\\content"));
     std::wstring str;
 
     if (noteInfoFile.is_open())
     {
-        note.content.Empty();
+        note->content.Empty();
         noteInfoFile.imbue(std::locale(noteInfoFile.getloc(), new std::codecvt_utf8<wchar_t, 0x10ffff, std::consume_header>()));
         while (!noteInfoFile.eof())
         {
             getline(noteInfoFile, str);
-            note.content += str.c_str();
-            note.content += L"\x0d\x0a";
+            note->content += str.c_str();
+            note->content += L"\x0d\x0a";
         }
 
-        note.content.Delete(note.content.GetLength() - 2, 2);
+        note->content.Delete(note->content.GetLength() - 2, 2);
         noteInfoFile.close();
     }
 }

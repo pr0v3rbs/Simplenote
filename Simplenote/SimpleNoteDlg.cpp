@@ -199,7 +199,7 @@ void CSimpleNoteDlg::OnLbnSelchangeNoteList()
 // make new note
 void CSimpleNoteDlg::OnBnClickedNewNote()
 {
-    //simplenoteManager_.MakeNewNote();
+    simplenoteManager_.MakeNewNote();
 }
 
 // click login
